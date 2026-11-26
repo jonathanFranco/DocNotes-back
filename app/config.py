@@ -7,19 +7,18 @@ BACKEND_DIR = Path(__file__).resolve().parent.parent
 
 
 class Settings(BaseSettings):
-
     model_config = SettingsConfigDict(env_file=BACKEND_DIR / ".env", extra="ignore")
 
     ollama_host: str = "http://localhost:11434"
     ollama_timeout_seconds: float = 120
     llm_model: str = "qwen2.5:3b"
     embedding_model: str = "embeddinggemma"
-    chroma_dir: Path = Path("chroma_db")
+    data_dir: Path = Path("data")
     max_upload_mb: int = 20
 
     @property
-    def chroma_path(self) -> Path:
-        return self.chroma_dir if self.chroma_dir.is_absolute() else BACKEND_DIR / self.chroma_dir
+    def data_path(self) -> Path:
+        return self.data_dir if self.data_dir.is_absolute() else BACKEND_DIR / self.data_dir
 
     @property
     def max_upload_bytes(self) -> int:

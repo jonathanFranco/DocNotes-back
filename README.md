@@ -1,26 +1,31 @@
 # DocNotes — Backend
 
-API do **DocNotes**: envie um PDF e converse com uma IA sobre o conteúdo dele. As respostas saem do próprio documento e indicam a página de cada informação. Tudo roda localmente, sem enviar dados para serviços externos.
+API do **DocNotes**: envie um PDF e receba um resumo ponto a ponto, na ordem do documento, com a página de cada informação. Cada ponto é conferido no próprio PDF com RAG e vem com o trecho de origem. Tudo roda localmente, sem enviar dados para serviços externos.
 
 Este repositório é a API (FastAPI + Ollama + ChromaDB). A interface web fica no repositório **frontend** do projeto.
 
 ## Como funciona
 
-O DocNotes usa **RAG** (*Retrieval-Augmented Generation*): em vez de pedir para a IA "lembrar" do documento, a API busca os trechos mais relevantes para cada pergunta e entrega só esses trechos ao modelo, que responde com base neles.
+Um PDF raramente cabe de uma vez no contexto do modelo. Por isso o resumo é feito em duas etapas (*map-reduce*), num processo em segundo plano que começa sozinho logo após o upload:
 
 ```
-Upload:   PDF → extração por página → limpeza → chunks → embeddings → ChromaDB
-Pergunta: pergunta → embedding → 4 trechos mais parecidos → filtro de relevância → LLM → resposta + páginas
+Upload:     PDF → extração por página → limpeza → chunks → embeddings → ChromaDB → resumo começa em segundo plano
+Map:        páginas agrupadas em blocos de ~2000 caracteres → para cada bloco, o modelo lista os pontos de cada página
+Reduce:     anotações juntadas na ordem do documento → resumo final, transmitido enquanto é escrito
+Verificação (RAG): para cada ponto → busca dos trechos mais parecidos no ChromaDB → checagem de números + juiz → confirmado ou não
 ```
+
+O frontend consulta `GET /documents/summary` a cada segundo e mostra o progresso da leitura, os pontos à medida que o modelo os escreve e o resultado da conferência de cada um.
 
 ## Stack
 
 | Camada | Tecnologia |
 |---|---|
 | API | Python 3.12, FastAPI, Pydantic |
-| IA local | [Ollama](https://ollama.com) com `qwen2.5:3b` (respostas) e `embeddinggemma` (embeddings) |
+| IA local | [Ollama](https://ollama.com) com `qwen2.5:3b` (resumo e verificação) e `embeddinggemma` (embeddings) |
 | PDF | PyMuPDF |
-| Banco vetorial | ChromaDB (persistido em disco) |
+| Banco vetorial | ChromaDB (trechos do documento, para a verificação) |
+| Armazenamento | Um arquivo JSON com o documento e o resumo |
 
 ## Início rápido com Docker (recomendado)
 
@@ -46,7 +51,7 @@ Quando aparecer `Uvicorn running on http://0.0.0.0:8000`, a API está pronta:
 
 ### Com GPU NVIDIA (opcional)
 
-Por padrão o Ollama roda na CPU, o que funciona em qualquer máquina. Se você tem GPU NVIDIA com o [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) instalado, as respostas ficam bem mais rápidas assim:
+Por padrão o Ollama roda na CPU, o que funciona em qualquer máquina. Se você tem GPU NVIDIA com o [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) instalado, os resumos ficam bem mais rápidos assim:
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build
@@ -59,16 +64,16 @@ O `docker-compose.gpu.yml` só libera a GPU para o serviço `ollama`. Sem o tool
 ```bash
 docker compose up -d --build      # sobe em segundo plano
 docker compose logs -f backend    # acompanha os logs da API
-docker compose down               # para tudo (mantém modelos e documento)
-docker compose down -v            # para e APAGA os volumes: modelos baixados e documento indexado
+docker compose down               # para tudo (mantém modelos, documento e resumo)
+docker compose down -v            # para e APAGA os volumes: modelos baixados, documento e resumo
 ```
 
 ### Observações
 
-- **Hot reload:** a pasta `app/` é montada no container. Ao editar o código, a API reinicia sozinha.
+- **Hot reload:** a pasta `app/` é montada no container. Ao editar o código, a API reinicia sozinha. Um resumo em andamento é perdido no reinício, e recomeça na próxima consulta do frontend.
 - **Ollama isolado:** o Ollama do container não publica a porta 11434, então não conflita com um Ollama instalado na sua máquina.
 - **Porta 8000:** a API em Docker e uma API rodando direto na máquina (sem Docker) disputam a mesma porta. Rode uma de cada vez.
-- **Dados separados:** em Docker, o ChromaDB fica no volume `chroma`. Sem Docker, fica em `./chroma_db`. Um documento enviado num modo não aparece no outro.
+- **Dados separados:** em Docker, o documento e o índice do ChromaDB ficam no volume `data`. Sem Docker, ficam em `./data`. Um documento enviado num modo não aparece no outro.
 
 ## Rodando sem Docker
 
@@ -102,13 +107,13 @@ Toda a configuração fica em [app/config.py](app/config.py). Os valores vêm de
 | Variável | Padrão | Descrição |
 |---|---|---|
 | `OLLAMA_HOST` | `http://localhost:11434` | URL do Ollama |
-| `OLLAMA_TIMEOUT_SECONDS` | `120` | Timeout das chamadas ao Ollama |
-| `LLM_MODEL` | `qwen2.5:3b` | Modelo que gera as respostas |
-| `EMBEDDING_MODEL` | `embeddinggemma` | Modelo de embeddings |
-| `CHROMA_DIR` | `chroma_db` | Pasta do ChromaDB (caminho relativo à raiz do backend) |
+| `OLLAMA_TIMEOUT_SECONDS` | `120` | Timeout de cada chamada ao Ollama |
+| `LLM_MODEL` | `qwen2.5:3b` | Modelo que escreve e confere o resumo |
+| `EMBEDDING_MODEL` | `embeddinggemma` | Modelo de embeddings usado na busca |
+| `DATA_DIR` | `data` | Pasta do documento, do resumo e do índice do ChromaDB (caminho relativo à raiz do backend) |
 | `MAX_UPLOAD_MB` | `20` | Tamanho máximo do PDF |
 
-Com Docker, `OLLAMA_HOST` e `CHROMA_DIR` são definidos pelo `docker-compose.yml`. Para trocar os modelos, use variáveis de ambiente, e os novos modelos são baixados na subida:
+Com Docker, `OLLAMA_HOST` e `DATA_DIR` são definidos pelo `docker-compose.yml`. Para trocar os modelos, use as variáveis de ambiente, e os novos modelos são baixados na subida:
 
 ```bash
 LLM_MODEL=llama3.2:3b docker compose up
@@ -118,36 +123,49 @@ LLM_MODEL=llama3.2:3b docker compose up
 
 | Método | Rota | Descrição |
 |---|---|---|
-| GET | `/health` | Status da API, do Ollama e dos modelos |
+| GET | `/health` | Status da API, do Ollama e dos dois modelos |
 | GET | `/documents` | Dados do documento atual (404 se não houver) |
-| POST | `/documents/upload` | Envia um PDF (`multipart/form-data`, campo `file`), processa e substitui o documento atual |
-| DELETE | `/documents` | Exclui o documento atual e seus vetores |
-| POST | `/chat` | Recebe `{"question": "..."}` e responde com base no documento atual |
+| POST | `/documents/upload` | Envia um PDF (`multipart/form-data`, campo `file`), indexa os trechos, substitui o documento atual e começa o resumo |
+| GET | `/documents/summary` | Estado do resumo. Consulte de novo enquanto `status` for `generating` |
+| POST | `/documents/summary` | Recomeça o resumo depois de uma falha (não faz nada se ele estiver pronto ou em andamento) |
+| DELETE | `/documents` | Exclui o documento, o resumo e os vetores, e interrompe um resumo em andamento |
 
-A API trabalha com **um documento por vez**: um novo upload substitui o anterior.
+A API trabalha com **um documento por vez**: um novo upload substitui o anterior e cancela o resumo que estava sendo gerado.
 
 ### Exemplos
 
 ```bash
 curl localhost:8000/health
 curl -F "file=@contrato.pdf" localhost:8000/documents/upload
-curl -H "Content-Type: application/json" -d '{"question": "Qual o prazo de entrega?"}' localhost:8000/chat
+curl localhost:8000/documents/summary
 curl -X DELETE localhost:8000/documents
 ```
 
-Resposta do `/chat`:
+Resposta do `/documents/summary` pronta:
 
 ```json
 {
-  "answer": "O prazo de entrega é de 15 dias úteis (p. 3).",
-  "found": true,
-  "sources": [{ "page": 3, "excerpt": "…trecho usado…", "similarity": 0.61 }]
+  "status": "ready",
+  "stage": null,
+  "progress": null,
+  "points": [
+    {
+      "text": "O contrato tem vigência de 24 meses, prorrogável até 60 meses (p. 2).",
+      "verified": true,
+      "evidence": { "page": 2, "excerpt": "O contrato terá vigência de 24 meses, contados a partir de 1º de março de 2026…" }
+    }
+  ],
+  "error": null
 }
 ```
 
-As respostas são sempre em português: o prompt, também em português, instrui o modelo a isso. Quando o documento não contém a resposta, `found` vale `false`, `answer` vem vazio e `sources` também: a mensagem de "não encontrei" fica a cargo de quem consome a API (o frontend mostra "Não encontrei essa informação no documento.").
+- `stage` mostra a fase: `reading` enquanto o modelo lê os blocos (`progress` diz quantos já foram lidos), `writing` enquanto o resumo final é escrito (os pontos chegam aos poucos e o último pode estar incompleto) e `checking` enquanto cada ponto é conferido (`progress` conta os pontos).
+- Cada ponto termina com as páginas citadas pelo modelo, no formato `(p. N)`.
+- `verified` vale `true` quando o documento confirma o ponto, `false` quando não confirma e `null` enquanto o ponto ainda não foi conferido. `evidence` traz o trecho do PDF mais parecido com o ponto e a página dele, que pode diferir da página citada quando o modelo citou errado.
+- Se a geração falhar, `status` vale `failed` e `error` traz o `code` (veja abaixo). `POST /documents/summary` tenta de novo.
+- O resumo pronto fica salvo: as próximas consultas respondem na hora, mesmo depois de reiniciar a API.
 
-No `/health`, `status` vale `ok` quando o Ollama responde e os dois modelos estão instalados. Nos outros casos vale `degraded`, e o campo `ollama.error` explica o problema.
+No `/health`, `status` vale `ok` quando o Ollama responde e o modelo está instalado. Nos outros casos vale `degraded`, e o campo `ollama.error` explica o problema.
 
 ### Erros
 
@@ -163,20 +181,22 @@ O `detail` serve para logs e para quem consome a API. Interfaces devem montar a 
 |---|---|---|---|
 | 400 | `FILE_NOT_PDF` | Arquivo sem extensão `.pdf` | |
 | 400 | `FILE_EMPTY` | Arquivo vazio | |
-| 404 | `NO_DOCUMENT` | `GET`/`DELETE /documents` sem documento carregado | |
-| 409 | `NO_DOCUMENT` | `/chat` sem documento carregado | |
+| 404 | `NO_DOCUMENT` | Nenhum documento carregado | |
 | 413 | `FILE_TOO_LARGE` | Arquivo maior que `MAX_UPLOAD_MB` | `max_mb` |
 | 422 | `PDF_INVALID` | O arquivo não é um PDF | |
 | 422 | `PDF_CORRUPTED` | PDF corrompido | |
 | 422 | `PDF_PASSWORD_PROTECTED` | PDF protegido por senha | |
 | 422 | `PDF_NO_PAGES` | PDF sem páginas | |
 | 422 | `PDF_NO_TEXT` | PDF sem texto extraível (digitalizado) | |
-| 422 | `QUESTION_EMPTY` | Pergunta vazia | |
-| 422 | `QUESTION_TOO_LONG` | Pergunta com mais de 1000 caracteres | `max_chars` |
-| 503 | `OLLAMA_UNAVAILABLE` | Ollama fora do ar | |
-| 503 | `OLLAMA_MODEL_ERROR` | Ollama recusou o modelo (por exemplo, não instalado) | `model` |
 
-Erros de validação do próprio FastAPI (por exemplo, corpo da requisição sem o campo `question`) seguem o formato padrão do framework, sem `code`.
+Erros que acontecem durante a geração do resumo não viram status HTTP: aparecem em `error.code` na resposta do `/documents/summary`.
+
+| `code` | Situação | `params` |
+|---|---|---|
+| `OLLAMA_UNAVAILABLE` | Ollama fora do ar | |
+| `OLLAMA_MODEL_ERROR` | Ollama recusou o modelo (por exemplo, não instalado) | `model` |
+| `SUMMARY_EMPTY` | O modelo não devolveu nenhum ponto | |
+| `SUMMARY_FAILED` | Erro inesperado (detalhes no log da API) | |
 
 ## Por dentro
 
@@ -184,33 +204,46 @@ Erros de validação do próprio FastAPI (por exemplo, corpo da requisição sem
 
 - **Extração:** texto página a página com PyMuPDF.
 - **Limpeza:** normalização Unicode (NFKC), remoção de caracteres de controle, junção de palavras hifenizadas e de linhas do mesmo parágrafo.
-- **Chunking:** cada página é dividida por sentenças em blocos de até ~1000 caracteres, com ~150 de sobreposição. Todo trecho tem uma página de origem exata.
-- **Embeddings:** gerados em lotes, com o prefixo de tarefa recomendado pelo `embeddinggemma`.
-- **Troca segura:** o novo documento só substitui o atual depois que todo o processamento dá certo. Se o Ollama falhar no meio, o documento anterior continua salvo.
+- **Armazenamento:** o documento (texto por página) e, depois, o resumo ficam num único `document.json`, gravado por escrita atômica (arquivo temporário + renomeação).
 
-### Respostas (RAG)
+### Resumo (map-reduce)
 
-- **Busca:** os 4 trechos mais parecidos com a pergunta, por similaridade de cosseno.
-- **Relevância:** trechos com similaridade abaixo de 0,20 são descartados. Se nenhum sobrar, a API responde "não encontrei" sem chamar a LLM.
-- **Reprodutível:** `temperature 0` e seed fixa, então a mesma pergunta gera a mesma resposta.
-- **Fontes:** a resposta lista só os trechos das páginas que cita no formato `(p. N)`.
+- **Blocos:** páginas consecutivas são agrupadas em blocos de até ~2000 caracteres. Uma página maior que isso é dividida entre sentenças.
+- **Map:** para cada bloco, o modelo lista de 1 a 5 pontos por página, sob títulos `Página N:`. As páginas das citações vêm desses títulos e quem as escreve é o código, não o modelo. Nos testes, o modelo errava ou omitia citações no meio do texto, mas seguia a estrutura de títulos.
+- **Reduce:** as anotações vão, na ordem, para uma última chamada que junta pontos repetidos e escreve o resumo final, com até 15 pontos, mantendo as páginas. Se as anotações não couberem numa chamada, elas são condensadas em rodadas antes.
+- **Sempre as duas etapas:** mesmo um documento curto passa pelo reduce. Nos testes, usar direto a lista por página gerava pontos repetidos e estourava o limite de tokens.
+- **Streaming:** o resumo final é lido do Ollama aos pedaços. A cada consulta, a API devolve os pontos já escritos.
+- **Reprodutível:** `temperature 0` e seed fixa.
+- **Tempo:** num PDF de 6 páginas, com o Ollama numa RTX 3050 de 4 GB, o resumo leva ~20 s. Cada bloco a mais soma alguns segundos.
+
+### Verificação com RAG
+
+O resumo é escrito por um modelo de 3B, que às vezes distorce uma informação. Por isso cada ponto passa por uma conferência no próprio documento:
+
+1. **Indexação:** no upload, cada página é dividida em trechos de até ~1000 caracteres, com ~150 de sobreposição. Os trechos viram vetores (`embeddinggemma`) e vão para o ChromaDB.
+2. **Busca:** cada ponto, sem as citações, vira um vetor de consulta. A busca traz os 3 trechos mais parecidos, e o sistema junta a eles os trechos das páginas que o ponto cita (até ~3500 caracteres).
+3. **Números:** todo número do ponto (valores, prazos, percentuais, datas) precisa aparecer nesses trechos. É uma checagem determinística.
+4. **Juiz:** o `qwen2.5:3b` recebe os trechos e o ponto e responde só SIM ou NÃO para "o trecho sustenta tudo o que a afirmação diz?".
+5. **Resultado:** o ponto é confirmado só se passar nas duas checagens. Um ponto não confirmado não é apagado: aparece marcado, com o trecho mais próximo ao lado.
+
+A similaridade de embeddings sozinha não serve como filtro. Na calibração, pontos verdadeiros ficaram entre 0,43 e 0,77 de similaridade com o melhor trecho, e pontos com um número trocado ficaram entre 0,54 e 0,64, porque falam do mesmo assunto. Já a combinação de números e juiz, num teste com 16 afirmações, aceitou 6 de 7 verdadeiras e barrou as 9 falsas, inclusive a troca de "4 h para urgentes / 48 h para os demais" por "4 h para preventiva / 48 h para corretiva". O único erro foi barrar um ponto verdadeiro cuja informação estava num trecho que a busca não trouxe. Por isso os trechos das páginas citadas entram junto. A conferência leva ~0,3 s por ponto.
 
 ### Guardrails
 
 | Camada | O que faz |
 |---|---|
-| Pergunta | Rejeita perguntas vazias ou com mais de 1000 caracteres |
-| Contexto | Limita a ~3000 caracteres e descarta trechos irrelevantes |
-| Prompt | Instrui a responder só com base nos trechos, citar páginas e tratar o documento como dado, não como instrução. Repete as regras no fim, porque modelos pequenos dão mais peso ao final do prompt |
-| Sanitização | Remove do texto enviado à LLM frases com padrão de *prompt injection* ("ignore as instruções…") e tags que quebrariam a delimitação do documento |
-| Saída | Detecta respostas "não encontrei", remove citações duplicadas e, se o modelo se contradiz, pede uma releitura do trecho citado |
+| Sanitização | Remove do texto enviado ao modelo frases com padrão de *prompt injection* ("ignore as instruções…"), em português e inglês, e tags que quebrariam a delimitação do documento |
+| Prompt | Instrui a usar só o texto, não opinar nem inventar, preservar números, datas e nomes, e tratar o documento como dado, não como instrução. Os prompts são em português, porque o resumo é em português |
+| Lembrete final | Repete o formato no fim do prompt, porque modelos pequenos dão mais peso ao final |
+| Saída | Aproveita só os itens de lista, ignora introduções, remove pontos repetidos, normaliza citações para `(p. N)` e descarta páginas que não existem no documento |
+| Verificação | Cada ponto é conferido no documento com RAG, checagem de números e juiz (veja acima) |
 
 ### Limitações conhecidas
 
-- O `qwen2.5:3b` é conservador: em perguntas que exigem inferência, ele pode responder "não encontrei" mesmo quando a informação está implícita no texto. Num teste com 36 perguntas sobre 3 PDFs, acertou 35 e **não inventou nenhuma resposta** para perguntas fora do documento.
-- Ele acha o trecho certo, mas pode explicar errado conteúdos que pedem raciocínio, como matemática passo a passo. Confira sempre as fontes.
+- Um modelo de 3B resume bem os fatos principais, mas pode juntar duas informações de um jeito errado. A verificação marca esses casos, mas não é infalível: ela pode deixar passar um erro sutil, e também é rigorosa, podendo marcar como não confirmada uma simplificação correta. Confira os trechos.
+- Detalhes secundários podem ficar de fora no reduce, que limita o resumo a 15 pontos.
 - PDFs digitalizados (só imagem) não são suportados, porque não há OCR.
-- A primeira pergunta depois de um tempo sem uso pode demorar alguns segundos, enquanto o Ollama carrega o modelo na memória.
+- O primeiro resumo depois de um tempo sem uso demora alguns segundos a mais, enquanto o Ollama carrega o modelo na memória.
 
 ## Estrutura
 
@@ -219,14 +252,17 @@ app/
   main.py                   app FastAPI e registro das rotas
   config.py                 configuração (variáveis de ambiente / .env)
   errors.py                 AppError e handler: erros com `code` estável
-  routes/                   health.py, documents.py, chat.py
+  routes/                   health.py, documents.py
   schemas/                  contratos Pydantic de entrada e saída
   services/
-    pdf_processor.py        extração, limpeza e chunking
+    pdf_processor.py        extração, limpeza e divisão do texto
+    document_store.py       documento e resumo em JSON (um documento por vez)
     embedding_service.py    embeddings via Ollama
-    vector_store.py         ChromaDB (um documento por vez)
-    rag_service.py          pipeline RAG
-    guardrails.py           validação, contexto, prompt e sanitização
+    vector_store.py         ChromaDB: trechos do documento e busca por similaridade
+    summary_service.py      resumo map-reduce em segundo plano
+    rag_service.py          RAG: conferência de cada ponto do resumo no documento
+    llm.py                  chamadas ao Ollama
+    guardrails.py           prompts, sanitização e leitura da resposta do modelo
 Dockerfile                  imagem da API
 docker-compose.yml          Ollama + download dos modelos + API
 docker-compose.gpu.yml      override opcional para GPU NVIDIA

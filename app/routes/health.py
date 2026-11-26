@@ -24,10 +24,7 @@ def health() -> HealthResponse:
         error = f"Ollama unavailable at {settings.ollama_host}: {exc}"
 
     llm = ModelStatus(name=settings.llm_model, available=_with_tag(settings.llm_model) in installed)
-    embedding = ModelStatus(
-        name=settings.embedding_model,
-        available=_with_tag(settings.embedding_model) in installed,
-    )
+    embedding = ModelStatus(name=settings.embedding_model, available=_with_tag(settings.embedding_model) in installed)
     ollama_status = OllamaStatus(reachable=error is None, llm=llm, embedding=embedding, error=error)
     ok = ollama_status.reachable and llm.available and embedding.available
     return HealthResponse(status="ok" if ok else "degraded", ollama=ollama_status)

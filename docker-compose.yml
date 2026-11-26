@@ -30,10 +30,10 @@ services:
       OLLAMA_HOST: http://ollama:11434
       LLM_MODEL: ${LLM_MODEL:-qwen2.5:3b}
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-embeddinggemma}
-      CHROMA_DIR: /data/chroma_db
+      DATA_DIR: /data
     volumes:
       - ./app:/app/app
-      - chroma:/data
+      - data:/data
     ports:
       - "8000:8000"
     depends_on:
@@ -42,4 +42,4 @@ services:
 
 volumes:
   ollama:
-  chroma:
+  data:

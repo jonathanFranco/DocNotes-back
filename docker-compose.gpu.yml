@@ -1,5 +1,3 @@
-# NVIDIA GPU for Ollama. Requires the NVIDIA Container Toolkit on the host.
-# Usage: docker compose -f docker-compose.yml -f docker-compose.gpu.yml up
 services:
   ollama:
     deploy:

@@ -7,12 +7,13 @@ from fastapi import status
 
 from app.errors import AppError
 
-CHUNK_SIZE = 1000
-CHUNK_OVERLAP = 150
-
 
 class InvalidPDFError(AppError):
     status_code = status.HTTP_422_UNPROCESSABLE_CONTENT
+
+
+CHUNK_CHARS = 1000
+CHUNK_OVERLAP = 150
 
 
 @dataclass(frozen=True)
@@ -70,43 +71,43 @@ def clean_text(text: str) -> str:
 def chunk_pages(pages: list[Page]) -> list[Chunk]:
     chunks: list[Chunk] = []
     for page in pages:
-        for text in _split(page.text):
+        for text in split_text(page.text, CHUNK_CHARS, overlap=CHUNK_OVERLAP):
             chunks.append(Chunk(text=text, page=page.number, index=len(chunks)))
     return chunks
 
 
-def _split(text: str) -> list[str]:
-    units = [u for s in re.split(r"(?<=[.!?…])\s+|\n\n", text) for u in _hard_wrap(s.strip()) if u]
-    chunks: list[str] = []
+def split_text(text: str, max_chars: int, *, overlap: int = 0) -> list[str]:
+    units = [u for s in re.split(r"(?<=[.!?…])\s+|\n\n", text) for u in _hard_wrap(s.strip(), max_chars) if u]
+    pieces: list[str] = []
     current: list[str] = []
     length = 0
     for unit in units:
-        if current and length + 1 + len(unit) > CHUNK_SIZE:
-            chunks.append(" ".join(current))
-            overlap: list[str] = []
+        if current and length + 1 + len(unit) > max_chars:
+            pieces.append(" ".join(current))
+            kept: list[str] = []
             for previous in reversed(current):
-                if sum(len(s) + 1 for s in overlap) + len(previous) > CHUNK_OVERLAP:
+                if sum(len(s) + 1 for s in kept) + len(previous) > overlap:
                     break
-                overlap.insert(0, previous)
-            current, length = overlap, sum(len(s) + 1 for s in overlap)
+                kept.insert(0, previous)
+            current, length = kept, sum(len(s) + 1 for s in kept)
         current.append(unit)
         length += len(unit) + 1
     if current:
-        chunks.append(" ".join(current))
-    return chunks
+        pieces.append(" ".join(current))
+    return pieces
 
 
-def _hard_wrap(sentence: str) -> list[str]:
-    if len(sentence) <= CHUNK_SIZE:
+def _hard_wrap(sentence: str, max_chars: int) -> list[str]:
+    if len(sentence) <= max_chars:
         return [sentence]
     parts: list[str] = []
     current = ""
     for word in sentence.split(" "):
-        if current and len(current) + 1 + len(word) > CHUNK_SIZE:
+        if current and len(current) + 1 + len(word) > max_chars:
             parts.append(current)
             current = word
         else:
             current = f"{current} {word}" if current else word
     if current:
         parts.append(current)
-    return [p[i : i + CHUNK_SIZE] for p in parts for i in range(0, len(p), CHUNK_SIZE)]
+    return [p[i : i + max_chars] for p in parts for i in range(0, len(p), max_chars)]

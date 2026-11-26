@@ -1,32 +1,22 @@
 import ollama
-from fastapi import status
 
 from app.config import get_settings
-from app.errors import AppError
+from app.services.llm import OllamaError
 
 BATCH_SIZE = 32
-
-
-class OllamaError(AppError):
-    status_code = status.HTTP_503_SERVICE_UNAVAILABLE
-
-
-def get_client() -> ollama.Client:
-    settings = get_settings()
-    return ollama.Client(host=settings.ollama_host, timeout=settings.ollama_timeout_seconds)
 
 
 def embed_documents(texts: list[str]) -> list[list[float]]:
     return _embed([f"title: none | text: {t}" for t in texts])
 
 
-def embed_query(question: str) -> list[float]:
-    return _embed([f"task: search result | query: {question}"])[0]
+def embed_queries(queries: list[str]) -> list[list[float]]:
+    return _embed([f"task: search result | query: {q}" for q in queries])
 
 
 def _embed(inputs: list[str]) -> list[list[float]]:
     settings = get_settings()
-    client = get_client()
+    client = ollama.Client(host=settings.ollama_host, timeout=settings.ollama_timeout_seconds)
     vectors: list[list[float]] = []
     try:
         for start in range(0, len(inputs), BATCH_SIZE):

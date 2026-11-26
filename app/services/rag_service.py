@@ -1,78 +1,66 @@
-from dataclasses import dataclass
+import re
+from collections.abc import Callable
 
-import ollama
-from fastapi import status
+from app.services import embedding_service, guardrails, llm, vector_store
+from app.services.document_store import Evidence, SummaryPoint
+from app.services.vector_store import SearchHit
 
-from app.config import get_settings
-from app.errors import AppError
-from app.services import embedding_service, guardrails, vector_store
-from app.services.embedding_service import OllamaError
+TOP_K = 3
+MAX_PASSAGE_CHARS = 3500
+EXCERPT_CHARS = 320
 
-TOP_K = 4
-EXCERPT_CHARS = 300
-
-
-class NoDocumentError(AppError):
-    status_code = status.HTTP_409_CONFLICT
+_SENTENCE_SPLIT = re.compile(r"(?<=[.!?…])\s+")
+_WORD = re.compile(r"\w{4,}")
 
 
-@dataclass(frozen=True)
-class Source:
-    page: int
-    excerpt: str
-    similarity: float
+def verify(document_id: str, points: list[str], on_checked: Callable[[SummaryPoint], None]) -> list[SummaryPoint]:
+    claims = [guardrails.strip_citations(point) for point in points]
+    embeddings = embedding_service.embed_queries(claims)
+    checked: list[SummaryPoint] = []
+    for point, claim, embedding in zip(points, claims, embeddings, strict=True):
+        result = _verify_one(document_id, point, claim, embedding)
+        checked.append(result)
+        on_checked(result)
+    return checked
 
 
-@dataclass(frozen=True)
-class Answer:
-    text: str
-    found: bool
-    sources: list[Source]
+def _verify_one(document_id: str, point: str, claim: str, embedding: list[float]) -> SummaryPoint:
+    cited = guardrails.cited_pages(point)
+    hits = vector_store.search(embedding, TOP_K, document_id)
+    if not hits:
+        return SummaryPoint(text=point)
+
+    passages = _passages(hits, vector_store.chunks_on_pages(document_id, cited))
+    texts = [hit.text for hit in passages]
+    supported = guardrails.numbers_match(claim, texts) and guardrails.judge_says_yes(
+        llm.chat(guardrails.JUDGE_SYSTEM_PROMPT, guardrails.build_judge_prompt(texts, claim), num_predict=4)
+    )
+    best = hits[0]
+    return SummaryPoint(text=point, verified=supported, evidence=Evidence(page=best.page, excerpt=_excerpt(claim, best.text)))
 
 
-def answer_question(question: str) -> Answer:
-    question = guardrails.validate_question(question)
-    if not vector_store.has_document():
-        raise NoDocumentError("NO_DOCUMENT", "No document loaded. Upload a PDF before asking.")
-
-    hits = vector_store.search(embedding_service.embed_query(question), TOP_K)
-    context = guardrails.select_context(hits)
-    if not context:
-        return Answer(text="", found=False, sources=[])
-
-    text = guardrails.clean_answer(_generate(guardrails.build_user_prompt(question, context)))
-    if retry_prompt := guardrails.build_retry_prompt(question, context, text):
-        text = guardrails.clean_answer(_generate(retry_prompt))
-    if guardrails.is_not_found(text):
-        return Answer(text="", found=False, sources=[])
-
-    cited = guardrails.cited_pages(text)
-    used = [hit for hit in context if hit.page in cited] or context
-    sources = [Source(page=hit.page, excerpt=_excerpt(hit.text), similarity=round(hit.similarity, 3)) for hit in used]
-    return Answer(text=text, found=True, sources=sources)
+def _passages(hits: list[SearchHit], cited: list[SearchHit]) -> list[SearchHit]:
+    selected: list[SearchHit] = []
+    seen: set[str] = set()
+    used = 0
+    for hit in [*hits, *cited]:
+        if hit.text in seen or used + len(hit.text) > MAX_PASSAGE_CHARS:
+            continue
+        selected.append(hit)
+        seen.add(hit.text)
+        used += len(hit.text)
+    return selected
 
 
-def _generate(user_prompt: str) -> str:
-    settings = get_settings()
-    try:
-        response = embedding_service.get_client().chat(
-            model=settings.llm_model,
-            messages=[
-                {"role": "system", "content": guardrails.SYSTEM_PROMPT},
-                {"role": "user", "content": user_prompt},
-            ],
-            options={"temperature": 0, "seed": 42, "num_ctx": 4096, "num_predict": 512},
-        )
-    except ollama.ResponseError as exc:
-        raise OllamaError(
-            "OLLAMA_MODEL_ERROR", f"Ollama rejected model '{settings.llm_model}': {exc.error}", model=settings.llm_model
-        ) from exc
-    except Exception as exc:
-        raise OllamaError("OLLAMA_UNAVAILABLE", f"Could not generate the answer via Ollama at {settings.ollama_host}.") from exc
-    return (response.message.content or "").strip()
-
-
-def _excerpt(text: str) -> str:
-    if len(text) <= EXCERPT_CHARS:
-        return text
-    return text[:EXCERPT_CHARS].rsplit(" ", 1)[0] + "…"
+def _excerpt(claim: str, passage: str) -> str:
+    sentences = _SENTENCE_SPLIT.split(passage)
+    words = {w.lower() for w in _WORD.findall(claim)}
+    best = max(range(len(sentences)), key=lambda i: len(words & {w.lower() for w in _WORD.findall(sentences[i])}))
+    excerpt = sentences[best]
+    for following in sentences[best + 1 :]:
+        if len(excerpt) + 1 + len(following) > EXCERPT_CHARS:
+            break
+        excerpt = f"{excerpt} {following}"
+    if len(excerpt) > EXCERPT_CHARS:
+        excerpt = excerpt[:EXCERPT_CHARS].rsplit(" ", 1)[0] + "…"
+    return excerpt
