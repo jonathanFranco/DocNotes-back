@@ -3,13 +3,16 @@ import unicodedata
 from dataclasses import dataclass
 
 import pymupdf
+from fastapi import status
+
+from app.errors import AppError
 
 CHUNK_SIZE = 1000
 CHUNK_OVERLAP = 150
 
 
-class InvalidPDFError(ValueError):
-    pass
+class InvalidPDFError(AppError):
+    status_code = status.HTTP_422_UNPROCESSABLE_CONTENT
 
 
 @dataclass(frozen=True)
@@ -27,18 +30,18 @@ class Chunk:
 
 def extract_pages(data: bytes) -> tuple[int, list[Page]]:
     if not data.startswith(b"%PDF-"):
-        raise InvalidPDFError("O arquivo não é um PDF válido.")
+        raise InvalidPDFError("PDF_INVALID", "The file is not a valid PDF.")
     try:
         doc = pymupdf.open(stream=data, filetype="pdf")
     except (pymupdf.FileDataError, pymupdf.EmptyFileError, RuntimeError) as exc:
-        raise InvalidPDFError("Não foi possível abrir o PDF; o arquivo pode estar corrompido.") from exc
+        raise InvalidPDFError("PDF_CORRUPTED", "Could not open the PDF; the file may be corrupted.") from exc
 
     with doc:
         if doc.needs_pass:
-            raise InvalidPDFError("PDF protegido por senha não é suportado.")
+            raise InvalidPDFError("PDF_PASSWORD_PROTECTED", "Password-protected PDFs are not supported.")
         page_count = doc.page_count
         if page_count == 0:
-            raise InvalidPDFError("O PDF não contém páginas.")
+            raise InvalidPDFError("PDF_NO_PAGES", "The PDF has no pages.")
         pages = [
             Page(number=i + 1, text=text)
             for i, page in enumerate(doc)
@@ -47,7 +50,8 @@ def extract_pages(data: bytes) -> tuple[int, list[Page]]:
 
     if not pages:
         raise InvalidPDFError(
-            "Nenhum texto extraível encontrado. PDFs digitalizados (apenas imagem) não são suportados."
+            "PDF_NO_TEXT",
+            "No extractable text found. Scanned (image-only) PDFs are not supported.",
         )
     return page_count, pages
 

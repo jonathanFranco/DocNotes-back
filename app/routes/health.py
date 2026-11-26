@@ -21,7 +21,7 @@ def health() -> HealthResponse:
         client = ollama.Client(host=settings.ollama_host, timeout=5)
         installed = {m.model for m in client.list().models if m.model}
     except Exception as exc:
-        error = f"Ollama indisponível em {settings.ollama_host}: {exc}"
+        error = f"Ollama unavailable at {settings.ollama_host}: {exc}"
 
     llm = ModelStatus(name=settings.llm_model, available=_with_tag(settings.llm_model) in installed)
     embedding = ModelStatus(

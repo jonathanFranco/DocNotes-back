@@ -1,5 +1,8 @@
 import re
 
+from fastapi import status
+
+from app.errors import AppError
 from app.services.vector_store import SearchHit
 
 MAX_QUESTION_CHARS = 1000
@@ -41,16 +44,20 @@ _SENTENCE_SPLIT = re.compile(r"(?<=[.!?…])\s+")
 _CITATION = re.compile(r"\(p\.\s*(\d+)\)")
 
 
-class QuestionError(ValueError):
-    pass
+class QuestionError(AppError):
+    status_code = status.HTTP_422_UNPROCESSABLE_CONTENT
 
 
 def validate_question(question: str) -> str:
     question = " ".join(question.split())
     if not question:
-        raise QuestionError("A pergunta não pode estar vazia.")
+        raise QuestionError("QUESTION_EMPTY", "The question cannot be empty.")
     if len(question) > MAX_QUESTION_CHARS:
-        raise QuestionError(f"A pergunta deve ter no máximo {MAX_QUESTION_CHARS} caracteres.")
+        raise QuestionError(
+            "QUESTION_TOO_LONG",
+            f"The question must be at most {MAX_QUESTION_CHARS} characters.",
+            max_chars=MAX_QUESTION_CHARS,
+        )
     return question
 
 

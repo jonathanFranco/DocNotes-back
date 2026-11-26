@@ -1,12 +1,14 @@
 import ollama
+from fastapi import status
 
 from app.config import get_settings
+from app.errors import AppError
 
 BATCH_SIZE = 32
 
 
-class OllamaError(RuntimeError):
-    pass
+class OllamaError(AppError):
+    status_code = status.HTTP_503_SERVICE_UNAVAILABLE
 
 
 def get_client() -> ollama.Client:
@@ -31,7 +33,13 @@ def _embed(inputs: list[str]) -> list[list[float]]:
             response = client.embed(model=settings.embedding_model, input=inputs[start : start + BATCH_SIZE])
             vectors.extend(list(v) for v in response.embeddings)
     except ollama.ResponseError as exc:
-        raise OllamaError(f"Ollama recusou o modelo '{settings.embedding_model}': {exc.error}") from exc
+        raise OllamaError(
+            "OLLAMA_MODEL_ERROR",
+            f"Ollama rejected model '{settings.embedding_model}': {exc.error}",
+            model=settings.embedding_model,
+        ) from exc
     except Exception as exc:
-        raise OllamaError(f"Não foi possível gerar embeddings via Ollama em {settings.ollama_host}.") from exc
+        raise OllamaError(
+            "OLLAMA_UNAVAILABLE", f"Could not generate embeddings via Ollama at {settings.ollama_host}."
+        ) from exc
     return vectors

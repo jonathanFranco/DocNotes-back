@@ -2,9 +2,10 @@ import time
 import uuid
 from pathlib import PurePath
 
-from fastapi import APIRouter, HTTPException, UploadFile, status
+from fastapi import APIRouter, UploadFile, status
 
 from app.config import get_settings
+from app.errors import AppError
 from app.schemas.document import DeleteResponse, DocumentInfo, UploadResponse
 from app.services import embedding_service, pdf_processor, vector_store
 
@@ -15,7 +16,7 @@ router = APIRouter(prefix="/documents", tags=["documents"])
 def get_current_document() -> DocumentInfo:
     summary = vector_store.current_document()
     if summary is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Nenhum documento carregado.")
+        raise AppError("NO_DOCUMENT", "No document loaded.", status_code=status.HTTP_404_NOT_FOUND)
     return DocumentInfo(
         document_id=summary.document.document_id,
         filename=summary.document.filename,
@@ -30,28 +31,24 @@ def upload_document(file: UploadFile) -> UploadResponse:
     settings = get_settings()
     filename = PurePath(file.filename or "").name
     if not filename.lower().endswith(".pdf"):
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Envie um arquivo com extensão .pdf.")
+        raise AppError("FILE_NOT_PDF", "Upload a file with the .pdf extension.")
 
     data = file.file.read(settings.max_upload_bytes + 1)
     if len(data) > settings.max_upload_bytes:
-        raise HTTPException(
-            status.HTTP_413_CONTENT_TOO_LARGE,
-            f"O arquivo excede o limite de {settings.max_upload_mb} MB.",
+        raise AppError(
+            "FILE_TOO_LARGE",
+            f"The file exceeds the {settings.max_upload_mb} MB limit.",
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            max_mb=settings.max_upload_mb,
         )
     if not data:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "O arquivo está vazio.")
+        raise AppError("FILE_EMPTY", "The file is empty.")
 
     started = time.perf_counter()
-    try:
-        page_count, pages = pdf_processor.extract_pages(data)
-    except pdf_processor.InvalidPDFError as exc:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
+    page_count, pages = pdf_processor.extract_pages(data)
 
     chunks = pdf_processor.chunk_pages(pages)
-    try:
-        embeddings = embedding_service.embed_documents([c.text for c in chunks])
-    except embedding_service.OllamaError as exc:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from exc
+    embeddings = embedding_service.embed_documents([c.text for c in chunks])
 
     document = vector_store.StoredDocument(
         document_id=uuid.uuid4().hex, filename=filename, page_count=page_count
@@ -59,7 +56,7 @@ def upload_document(file: UploadFile) -> UploadResponse:
     vector_store.replace_document(document, chunks, embeddings)
 
     return UploadResponse(
-        message="Documento processado com sucesso.",
+        message="Document processed successfully.",
         document=DocumentInfo(
             document_id=document.document_id,
             filename=filename,
@@ -74,5 +71,5 @@ def upload_document(file: UploadFile) -> UploadResponse:
 @router.delete("", response_model=DeleteResponse)
 def delete_document() -> DeleteResponse:
     if not vector_store.delete_document():
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Nenhum documento carregado.")
-    return DeleteResponse(message="Documento excluído.")
+        raise AppError("NO_DOCUMENT", "No document loaded.", status_code=status.HTTP_404_NOT_FOUND)
+    return DeleteResponse(message="Document deleted.")

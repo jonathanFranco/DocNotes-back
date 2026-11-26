@@ -145,22 +145,38 @@ Resposta do `/chat`:
 }
 ```
 
-Quando o documento não contém a resposta, `found` vale `false`, `answer` é "Não encontrei essa informação no documento." e `sources` vem vazio.
+As respostas são sempre em português: o prompt, também em português, instrui o modelo a isso. Quando o documento não contém a resposta, `found` vale `false`, `answer` vem vazio e `sources` também: a mensagem de "não encontrei" fica a cargo de quem consome a API (o frontend mostra "Não encontrei essa informação no documento.").
 
 No `/health`, `status` vale `ok` quando o Ollama responde e os dois modelos estão instalados. Nos outros casos vale `degraded`, e o campo `ollama.error` explica o problema.
 
 ### Erros
 
-Os erros sempre retornam `{"detail": "mensagem"}`:
+Os erros retornam um `code` estável, uma mensagem em inglês em `detail` e, quando relevante, valores em `params`:
 
-| Código | Situação |
-|---|---|
-| 400 | Arquivo sem extensão `.pdf` ou vazio |
-| 404 | `GET`/`DELETE /documents` sem documento carregado |
-| 409 | `/chat` sem documento carregado |
-| 413 | Arquivo maior que `MAX_UPLOAD_MB` |
-| 422 | PDF inválido, corrompido, protegido por senha ou sem texto (digitalizado); pergunta vazia ou com mais de 1000 caracteres |
-| 503 | Ollama fora do ar ou modelo não instalado |
+```json
+{ "code": "FILE_TOO_LARGE", "detail": "The file exceeds the 20 MB limit.", "params": { "max_mb": 20 } }
+```
+
+O `detail` serve para logs e para quem consome a API. Interfaces devem montar a mensagem a partir do `code`: o frontend faz isso em português.
+
+| Status | `code` | Situação | `params` |
+|---|---|---|---|
+| 400 | `FILE_NOT_PDF` | Arquivo sem extensão `.pdf` | |
+| 400 | `FILE_EMPTY` | Arquivo vazio | |
+| 404 | `NO_DOCUMENT` | `GET`/`DELETE /documents` sem documento carregado | |
+| 409 | `NO_DOCUMENT` | `/chat` sem documento carregado | |
+| 413 | `FILE_TOO_LARGE` | Arquivo maior que `MAX_UPLOAD_MB` | `max_mb` |
+| 422 | `PDF_INVALID` | O arquivo não é um PDF | |
+| 422 | `PDF_CORRUPTED` | PDF corrompido | |
+| 422 | `PDF_PASSWORD_PROTECTED` | PDF protegido por senha | |
+| 422 | `PDF_NO_PAGES` | PDF sem páginas | |
+| 422 | `PDF_NO_TEXT` | PDF sem texto extraível (digitalizado) | |
+| 422 | `QUESTION_EMPTY` | Pergunta vazia | |
+| 422 | `QUESTION_TOO_LONG` | Pergunta com mais de 1000 caracteres | `max_chars` |
+| 503 | `OLLAMA_UNAVAILABLE` | Ollama fora do ar | |
+| 503 | `OLLAMA_MODEL_ERROR` | Ollama recusou o modelo (por exemplo, não instalado) | `model` |
+
+Erros de validação do próprio FastAPI (por exemplo, corpo da requisição sem o campo `question`) seguem o formato padrão do framework, sem `code`.
 
 ## Por dentro
 
@@ -202,6 +218,7 @@ Os erros sempre retornam `{"detail": "mensagem"}`:
 app/
   main.py                   app FastAPI e registro das rotas
   config.py                 configuração (variáveis de ambiente / .env)
+  errors.py                 AppError e handler: erros com `code` estável
   routes/                   health.py, documents.py, chat.py
   schemas/                  contratos Pydantic de entrada e saída
   services/

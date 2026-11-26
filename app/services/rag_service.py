@@ -1,8 +1,10 @@
 from dataclasses import dataclass
 
 import ollama
+from fastapi import status
 
 from app.config import get_settings
+from app.errors import AppError
 from app.services import embedding_service, guardrails, vector_store
 from app.services.embedding_service import OllamaError
 
@@ -10,8 +12,8 @@ TOP_K = 4
 EXCERPT_CHARS = 300
 
 
-class NoDocumentError(LookupError):
-    pass
+class NoDocumentError(AppError):
+    status_code = status.HTTP_409_CONFLICT
 
 
 @dataclass(frozen=True)
@@ -31,18 +33,18 @@ class Answer:
 def answer_question(question: str) -> Answer:
     question = guardrails.validate_question(question)
     if not vector_store.has_document():
-        raise NoDocumentError("Nenhum documento carregado. Envie um PDF antes de perguntar.")
+        raise NoDocumentError("NO_DOCUMENT", "No document loaded. Upload a PDF before asking.")
 
     hits = vector_store.search(embedding_service.embed_query(question), TOP_K)
     context = guardrails.select_context(hits)
     if not context:
-        return Answer(text=guardrails.NOT_FOUND_ANSWER, found=False, sources=[])
+        return Answer(text="", found=False, sources=[])
 
     text = guardrails.clean_answer(_generate(guardrails.build_user_prompt(question, context)))
     if retry_prompt := guardrails.build_retry_prompt(question, context, text):
         text = guardrails.clean_answer(_generate(retry_prompt))
     if guardrails.is_not_found(text):
-        return Answer(text=guardrails.NOT_FOUND_ANSWER, found=False, sources=[])
+        return Answer(text="", found=False, sources=[])
 
     cited = guardrails.cited_pages(text)
     used = [hit for hit in context if hit.page in cited] or context
@@ -62,9 +64,11 @@ def _generate(user_prompt: str) -> str:
             options={"temperature": 0, "seed": 42, "num_ctx": 4096, "num_predict": 512},
         )
     except ollama.ResponseError as exc:
-        raise OllamaError(f"Ollama recusou o modelo '{settings.llm_model}': {exc.error}") from exc
+        raise OllamaError(
+            "OLLAMA_MODEL_ERROR", f"Ollama rejected model '{settings.llm_model}': {exc.error}", model=settings.llm_model
+        ) from exc
     except Exception as exc:
-        raise OllamaError(f"Não foi possível gerar a resposta via Ollama em {settings.ollama_host}.") from exc
+        raise OllamaError("OLLAMA_UNAVAILABLE", f"Could not generate the answer via Ollama at {settings.ollama_host}.") from exc
     return (response.message.content or "").strip()
 
 
