@@ -84,10 +84,10 @@ _INJECTION_PATTERN = re.compile(
     r"|you\s+are\s+now\b"
     r"|(?:system|sistema)\s*prompt"
     r"|responda\s+(?:a\s+qualquer\s+pergunta\s+)?(?:apenas|somente|só)\s+com"
-    r"|(?:assistente|chatbot|modelo\s+de\s+linguagem|\bIA\b|\bLLM\b|\bAI\b)\s*(?:de\s+IA\s*)?[:,]"
+    r"|^\W*(?:assistente|chatbot|modelo\s+de\s+linguagem|IA|LLM|AI)\b\s*(?:de\s+IA\s*)?[:,]"
     r"|(?:escreva|responda|redija|termine)\s+(?:todas\s+as\s+|suas\s+|as\s+|cada\s+)?respostas?\b"
     r"|from\s+now\s+on",
-    re.IGNORECASE,
+    re.IGNORECASE | re.MULTILINE,
 )
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?…])\s+")
 _POINT = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s+(.*\S)\s*$")

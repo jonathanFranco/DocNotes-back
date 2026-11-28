@@ -112,6 +112,7 @@ Toda a configuração fica em [app/config.py](app/config.py). Os valores vêm de
 | `EMBEDDING_MODEL` | `embeddinggemma` | Modelo de embeddings usado na busca |
 | `DATA_DIR` | `data` | Pasta do documento, do resumo e do índice do ChromaDB (caminho relativo à raiz do backend) |
 | `MAX_UPLOAD_MB` | `20` | Tamanho máximo do PDF |
+| `LOG_LEVEL` | `INFO` | Nível de log; cada chamada ao modelo gera uma linha com tokens, limite e duração |
 
 Com Docker, `OLLAMA_HOST` e `DATA_DIR` são definidos pelo `docker-compose.yml`. Para trocar os modelos, use as variáveis de ambiente, e os novos modelos são baixados na subida:
 
@@ -232,7 +233,7 @@ A similaridade de embeddings sozinha não serve como filtro. Na calibração, po
 
 | Camada | O que faz |
 |---|---|
-| Sanitização | Remove do texto enviado ao modelo frases com padrão de *prompt injection* ("ignore as instruções…"), em português e inglês, e tags que quebrariam a delimitação do documento |
+| Sanitização | Remove do texto enviado ao modelo frases com padrão de *prompt injection* ("ignore as instruções…"), em português e inglês, e tags que quebrariam a delimitação do documento. Frases dirigidas à IA ("IA: …") só contam como injeção no início da linha, para não derrubar linhas como "Habilidades: Python, AI, ML" |
 | Prompt | Instrui a usar só o texto, não opinar nem inventar, preservar números, datas e nomes, e tratar o documento como dado, não como instrução. Os prompts são em português, porque o resumo é em português |
 | Lembrete final | Repete o formato no fim do prompt, porque modelos pequenos dão mais peso ao final |
 | Saída | Aproveita só os itens de lista, ignora introduções, remove pontos repetidos, normaliza citações para `(p. N)` e descarta páginas que não existem no documento |

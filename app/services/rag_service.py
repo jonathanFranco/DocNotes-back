@@ -33,7 +33,9 @@ def _verify_one(document_id: str, point: str, claim: str, embedding: list[float]
     passages = _passages(hits, vector_store.chunks_on_pages(document_id, cited))
     texts = [hit.text for hit in passages]
     supported = guardrails.numbers_match(claim, texts) and guardrails.judge_says_yes(
-        llm.chat(guardrails.JUDGE_SYSTEM_PROMPT, guardrails.build_judge_prompt(texts, claim), num_predict=4)
+        llm.chat(
+            guardrails.JUDGE_SYSTEM_PROMPT, guardrails.build_judge_prompt(texts, claim), task="rag.judge_claim", num_predict=4
+        )
     )
     best = hits[0]
     return SummaryPoint(text=point, verified=supported, evidence=Evidence(page=best.page, excerpt=_excerpt(claim, best.text)))

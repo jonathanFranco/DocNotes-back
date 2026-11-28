@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     embedding_model: str = "embeddinggemma"
     data_dir: Path = Path("data")
     max_upload_mb: int = 20
+    log_level: str = "INFO"
 
     @property
     def data_path(self) -> Path:

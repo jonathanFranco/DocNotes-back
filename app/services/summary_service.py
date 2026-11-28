@@ -132,7 +132,12 @@ def _summarize(job: _Job, pages: list[Page]) -> list[str]:
     for block in blocks:
         if job.cancelled:
             return []
-        answer = llm.chat(guardrails.MAP_SYSTEM_PROMPT, guardrails.build_block_prompt(block.sections), num_predict=MAP_MAX_TOKENS)
+        answer = llm.chat(
+            guardrails.MAP_SYSTEM_PROMPT,
+            guardrails.build_block_prompt(block.sections),
+            task="summary.map",
+            num_predict=MAP_MAX_TOKENS,
+        )
         notes.append(_as_list(guardrails.parse_page_sections(answer, block.pages)))
         job.done += 1
 
@@ -145,7 +150,7 @@ def _summarize(job: _Job, pages: list[Page]) -> list[str]:
     job.draft_pages = all_pages
     job.stage = "writing"
     prompt = guardrails.build_notes_prompt(notes)
-    for piece in llm.stream_chat(guardrails.REDUCE_SYSTEM_PROMPT, prompt, num_predict=FINAL_MAX_TOKENS):
+    for piece in llm.stream_chat(guardrails.REDUCE_SYSTEM_PROMPT, prompt, task="summary.final", num_predict=FINAL_MAX_TOKENS):
         if job.cancelled:
             return []
         job.draft += piece
@@ -153,7 +158,12 @@ def _summarize(job: _Job, pages: list[Page]) -> list[str]:
 
 
 def _reduce(batch: list[str], valid_pages: frozenset[int]) -> str:
-    answer = llm.chat(guardrails.REDUCE_SYSTEM_PROMPT, guardrails.build_notes_prompt(batch), num_predict=MAP_MAX_TOKENS * 2)
+    answer = llm.chat(
+        guardrails.REDUCE_SYSTEM_PROMPT,
+        guardrails.build_notes_prompt(batch),
+        task="summary.reduce",
+        num_predict=MAP_MAX_TOKENS * 2,
+    )
     return _as_list(guardrails.parse_points(answer, valid_pages))
 
 
